@@ -1,0 +1,343 @@
+---
+title: "Flatiron Health Assessment"
+author: Karthik Mahanth Kattula
+date: "10/26/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(data.table, forecast, leaps, tidyverse, ggcorrplot,ggplot, corrplot,xtable,dplyr,caTools,dummies,MASS,caret,ddplot2,lift,blorr,gains,sqldf)
+```
+
+
+#Load two datasets Diagnosis and Treatment as dataframes in R  
+```{r}
+diagnosis<-read.csv("DiagnosisSample01.csv")
+treatment<-read.csv("TreatmentSample01.csv")
+```
+
+
+```{r}
+str(diagnosis)
+str(treatment)
+```
+#We can see that diagnosis dataset consists of observations related to patients and their diagnosis whereas treatment data consists of observations related to treatment for each type of drug and the treatment dates for different patients
+
+
+```{r}
+diag.fcols<-c("PatientID","DiagnosisCode","Diagnosis")
+diagnosis[diag.fcols]<-lapply(diagnosis[diag.fcols],factor)
+diagnosis$DiagnosisDate<-as.Date(diagnosis$DiagnosisDate,"%m/%d/%Y")
+str(diagnosis)
+```
+#From the above, we can conclude that there are 32 patients in the clinic taking diagnosis and the clinic is diagnosing for four different diseases
+
+
+```{r}
+treat.fcols<-c("PatientID","DrugCode")
+treatment[treat.fcols]<-lapply(treatment[treat.fcols],factor)
+treatment$TreatmentDate<-as.Date(treatment$TreatmentDate,"%Y-%m-%d")
+str(treatment)
+```
+#From the above, we can conclude that there are 27 patients who are taking treatment from atleast one type of drug A,B or C
+
+
+
+#Question 1                                                                                                                  First, the clinic would like to know for which diseases they are seeing patients for ?
+```{r}
+unique(diagnosis$Diagnosis)
+```
+#Overall, the clinic is seeing patients for four different types of diseases namely Anemia, Breast Cancer, Colon Cancer and Hypertension
+
+
+#Question 1a Which types of cancer does the clinic see patients for ?                                                                                                                                                                                     First subset dataframe based on condition isCancerdiagnosis equals to True and then find different types of cancer in the resulting dataframe
+```{r}
+cancer.diagnosis <- diagnosis[diagnosis$IsCancerDiagnosis==TRUE,]
+unique(cancer.diagnosis$Diagnosis)
+```
+#We can conclude that from the sample given that clinic is seeing patients for two different types of cancer namely Breast Cancer and Colon Cancer
+
+
+#Question 1b How many patients does the clinic see for each cancer type?                                                     In the resulting dataframe which is obtained by subsetting the iscancerdiagnosis=True group by diagnosis variable using dplyr package and find the count of unique patient id's for each type of cancer
+
+```{r}
+df<-data.frame(cancer.diagnosis %>% group_by(Diagnosis) %>% 
+                 summarise(count=n_distinct(PatientID),.groups='drop'))
+df
+```
+
+```{r}
+ggplot(df,aes(Diagnosis,count)) +geom_col(fill = "#0073C2FF") + ggtitle("No. of patients for Cancer Type") + geom_text(aes(label=count))
+```
+
+#We can conclude that clinic is seeing 20 patients suffering from Breast cancer type and 9 patients suffering from Colon Cancer Type
+
+
+#Question 2 The clinic wants to know how long it takes for patients to start therapy after being diagnosed, which they consider to be helpful in understanding the quality of care for patients                                                    
+
+#Question 2a How long after being diagnosed do cancer patients start treatment for each cancer type?                         For each of the cancer types Breast Cancer and Colon Cancer find the patients most recent diagnosed dates and earliest start date in treatment dataset for the same patients. Later find the difference between these two dates and then take the average of difference of the dates  
+```{r}
+cancer.diagnosis.df<-cancer.diagnosis[,c("PatientID","DiagnosisDate","Diagnosis")]
+```
+
+```{r}
+duplicates<- cancer.diagnosis.df[(cancer.diagnosis.df$Diagnosis %in% cancer.diagnosis.df$Diagnosis[duplicated(cancer.diagnosis.df$Diagnosis)] & cancer.diagnosis.df$PatientID %in% cancer.diagnosis.df$PatientID[duplicated(cancer.diagnosis.df$PatientID)]),]
+
+noduplicates<- cancer.diagnosis.df[!(cancer.diagnosis.df$Diagnosis %in% cancer.diagnosis.df$Diagnosis[duplicated(cancer.diagnosis.df$Diagnosis)] & cancer.diagnosis.df$PatientID %in% cancer.diagnosis.df$PatientID[duplicated(cancer.diagnosis.df$PatientID)]),]
+```
+
+#I seperated cancer diagnosis dataset into duplicates one and non duplicates one. My idea is to extract the most recent diagnosed date for patient id with duplicates and then r bind with no duplicates dataframe. So, then we will be having patient id's and their recent diagnosis date or last diagnosis date for different types of cancer namely Breast Cancer and Colon Cancer
+
+
+```{r}
+duplicates
+```
+
+```{r}
+df4<-data.frame(duplicates%>%group_by(PatientID,Diagnosis)%>%summarise(date=max(DiagnosisDate),.groups='drop'))
+df4
+```
+
+#R bind the above dataframe df4 with no duplicates dataframe. So, the resulting dataframe will be containing unique patientid and diagnosis and the most recent diagnosed date for the patient
+```{r}
+df5<-data.frame(noduplicates%>% group_by(PatientID,Diagnosis)%>%summarise(date=max(DiagnosisDate),.groups='drop'))
+df5
+```
+
+```{r}
+res.df.nodup<-data.frame(rbind(df5,df4))
+res.df.nodup
+```
+
+#Now from treatments dataset find unique patient id's and their starting dates of the therapy
+```{r}
+treatment.q2<-treatment[,c("PatientID","TreatmentDate")]
+df6<-treatment.q2%>%group_by(PatientID)%>%summarise(date=min(TreatmentDate),.groups='drop')
+df6
+names(df6)<-c("PatientID","t.treatmentdate")
+```
+
+#Perform Left join operation on the above two dataframes df6 and res.df.nodup and then create a new variable and calculate the date difference between starting treatment date and most recent diagnosis date
+```{r}
+res.df<- merge(x = res.df.nodup, y = df6, by = "PatientID", all.x = TRUE)
+```
+
+#Creating a new column and calculating the date difference in days between two columns most recent diagnosis date and earliest starting treatment date
+```{r}
+res.df$daysdiff <- res.df$t.treatmentdate - res.df$date
+```
+
+#Subset breast cancer days diff into another df and plotting the distribution to know about the distribution and to know the patients behavior, similarly for colon type of cancer doing the same
+```{r}
+breast.cancer.df <- res.df[res.df$Diagnosis=='Breast Cancer',]
+colon.cancer.df <- res.df[res.df$Diagnosis=='Colon Cancer',]
+
+ggplot(breast.cancer.df,aes(PatientID,daysdiff)) + geom_col(fill = "#0073C2FF") + ggtitle("Days required to start Breast Cancer treatment after diagnosis") + geom_text(aes(label=daysdiff))
+```
+
+#From the above distribution we can see that the patient with id 6877 has started the treatment even before diagnosis and and patients with id 2120 and 3757 is taking bit longer to start their treatment when compared with other patients. In order to know reason why, we need to further investigate if there are any specific reasons for this type of delay.On an average we can say that breast cancer patients are taking approximately 3-5 days after their diagnosis. For calculation purposes exclude PatientID 2120,3757 and 6877 and then calculate average of daysdiff which will give approximately the days required to start treatment after diagnosis for breast cancer
+```{r}
+breast.cancer.df <- breast.cancer.df[ !(breast.cancer.df$PatientID %in% c(2120,3757,6877)), ]
+mean(breast.cancer.df$daysdiff)
+```
+#On an average approximately its taking 4 days to start the treatment for breast cancer after diagnosis
+
+```{r}
+ggplot(colon.cancer.df,aes(PatientID,daysdiff)) + geom_col(fill = "#0073C2FF") + ggtitle("Days required to start Colon Cancer treatment after diagnosis") + geom_text(aes(label=daysdiff))
+```
+#From the above plot, we can see that only patients with ID's 3095 and 7230 are starting their treatments early whereas other patients are taking on an average approximately 13-15 days to start their treatment after diagnosis. This suggests that patients are taking some time to start the treatment if they are diagnosed with Colon Cancer whereas patients with Breast Cancer are starting their treatments within 3-4 days after their diagnosis
+
+```{r}
+mean(colon.cancer.df$daysdiff)
+```
+
+#Lets examine the Patient ID 6837
+```{r}
+res.df.6877 <- res.df[res.df$PatientID %in% ("6877"),]
+res.df.6877
+```
+#From the above table we can see that the patient is first diagnosed with Colon Cancer on 2012-11-16 and he started treatment from 2012-12-03 whereas when he diagnosed again on 2012-12-09 the diagnosis is of Breast Cancer type. This is why we see negative value of days diff 
+
+#Question2 b Are there any patients which are diagnosed but not treated at practice ?                                        To check patients who are diagnosed but are not treated at practice, first find patients in diagnosis dataset and then find unique patients in treatment dataset. Later, perform set difference operation which will give patients who are diagnosed but not treated at practice  
+```{r}
+df1<-unique(diagnosis$PatientID)
+df2<-unique(treatment$PatientID)
+df3<-setdiff(df1,df2)
+df3
+```
+#There are 5 patients who are diagnosed but not yet treated at practice and the respective Patient ID's for them is 2634,5657,7937,8615 and 8827
+
+
+#Question 3 After being treated with first line of treatment(a drug or combination of drugs), what proportion of all cancer patients go on to be treated with a second line of treatment                                                                 Based on my understanding, first line of treatment means a patients is taking therapy from any one drug or combination of drugs. So my approach is to find the number of patients who are taking treatment from one drug for few days and then taking another drug. When we examine the dataset we can see there are few patients who are taking multiple drugs on same day. It also comes under first line of treatment. We need to know the patients who took either one drug or combination of drugs on same day and then after few days they are taking again new drugs. For example one patient is taking drug A or B or C in his entire treatment. Then we can exclude him whereas on other hand if a patient is taking treatment with drug A for few days and then same patient started taking drug B (or)  when one patient is taking Drug A and B on same day for few days and then after few days if he starts taking Drug C then all these scenarios will come under second line of treatment
+```{r}
+df8<-treatment%>%group_by(PatientID)%>%count(drg=DrugCode)
+df8<-df8%>%group_by(PatientID)%>%summarise(d1=min(n),d2=max(n),.groups='drop')
+df8$diff = df8$d2 - df8$d1
+df8<-df8[df8$diff>0,]
+df8
+```
+#There are 7 patients who are taking second line of treatment of the total 27 Patients. So the proprotion of patients who go on to be treated with second line of treatment is 7/27 = 0.25925. In the clinic we can say that approx 26% of patients are undergoing second line of treatment from all the patients in the given sample
+
+#Question 4 How does each drug used at the clinic compare in terms of its duration of therapy?                               Duration of therapy is different for different patients, One way is for each drug find the min and max dates of drug  types A, B and C. But, this will not give accurate one, instead my approach is to find the min and max dates for each patient and drug combination which will give the duration of therapy for a specific patient belonging to different drug types A, B and C and then calculate average of the difference between dates which in general gives the effectiveness of drug and then compare the averages for different drug types
+```{r}
+drug.effect <- treatment%>%group_by(PatientID,DrugCode)%>%summarise(start_date=min(TreatmentDate),end_date=max(TreatmentDate),.groups='drop')
+drug.effect
+```
+#From the above table, we see that few patients are taking two drugs and three drugs. Lets examine the Patient ID's 2120,2407,5259 and 6321
+
+```{r}
+df7<-drug.effect[drug.effect$PatientID %in% c("2120","2407","5259","6321"),]
+df7
+```
+
+#From the above table, we see that Patient ID's 2120 and 2407 are taking therapy from two different drugs A and B from starting to end whereas Patient ID's 5259 and 6321 started their therapy with two different drugs A and B and after few days then they are using Drug C. To be precise when we examine this sample we see that it takes 5 days to start the therapy from Drug Type C after having done therapy with drugs A and B
+
+```{r}
+drug.effect$daysdiff <- drug.effect$end_date - drug.effect$start_date
+drug.effect<-drug.effect%>% group_by(DrugCode)%>%summarise(average=mean(daysdiff),.groups='drop')
+drug.effect
+```
+
+#From the above summary we conclude that Duration of therapy with Drug Code C requires more number of days followed by Drug Code B and A
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
